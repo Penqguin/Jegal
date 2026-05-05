@@ -1,0 +1,27 @@
+# Compiled files
+target/
+*.so
+*.dylib
+*.dll
+__pycache__/
+*.pyc
+
+# Distribution / packages
+dist/
+build/
+*.egg-info/
+
+# Environment and Secrets
+.env
+.env.*
+secrets.yaml
+keys.json
+
+# Local development
+.venv/
+venv/
+.idea/
+.vscode/
+
+# Project Specific
+jegal/_lib.*

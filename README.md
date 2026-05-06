@@ -16,28 +16,42 @@ A high-performance personal open-source auto trader built with a Python/Rust hyb
 
 ## Installation & Setup
 
-1.  **Clone the repository:**
+1. **Clone the repository:**
+
     ```bash
     git clone https://github.com/yourusername/jegal.git
     cd jegal
     ```
 
-2.  **Compile the Rust bindings:**
+2. **Compile the Rust bindings:**
+
     ```bash
     maturin develop --release
     ```
 
-3.  **Install Python dependencies:**
+3. **Install Python dependencies:**
+
     ```bash
     pip install -e .
     ```
 
 ## Usage
 
-To run the example strategy:
+To run the full integrated system:
+
+```bash
+python main.py
+```
+
+To run individual research scripts:
+
 ```bash
 python jegal/strategy.py
 ```
+
+## Architecture Decisions
+
+For detailed architectural reasoning, please refer to our [ADRs](docs/adr/).
 
 ## Security
 

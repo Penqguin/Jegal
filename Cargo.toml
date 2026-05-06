@@ -10,6 +10,9 @@ crate-type = ["cdylib"]
 [dependencies]
 pyo3 = { version = "0.20", features = ["extension-module"] }
 arrow = "50.0.0"
+arrow-array = "50.0.0"
+arrow-schema = "50.0.0"
+arrow-data = "50.0.0"
 
 [dev-dependencies]
 # Add dev dependencies here

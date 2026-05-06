@@ -12,16 +12,16 @@ dependencies = [
     "numpy>=1.24.0",
     "pandas>=2.0.0",
 ]
-
-[project.optional-dependencies]
-test = [
-    "pytest>=7.0.0",
-]
 authors = [
     { name = "Michael Maddison" },
 ]
 readme = "README.md"
 license = { text = "MIT" }
+
+[project.optional-dependencies]
+test = [
+    "pytest>=7.0.0",
+]
 
 [tool.maturin]
 features = ["pyo3/extension-module"]

@@ -1,5 +1,6 @@
 import pyarrow as pa
 import pandas as pd
+import ctypes
 from ._lib import RiskManager, ExecutionEngine
 
 def dispatch_to_execution_engine(df: pd.DataFrame, engine: ExecutionEngine):
@@ -7,28 +8,51 @@ def dispatch_to_execution_engine(df: pd.DataFrame, engine: ExecutionEngine):
     Orchestrates the transfer of signal data to the Rust execution engine.
     
     This function converts Pandas data into Apache Arrow buffers for zero-copy 
-    sharing across the Python/Rust boundary.
+    sharing across the Python/Rust boundary using the C Data Interface.
     
     Args:
         df (pd.DataFrame): DataFrame containing signals and market data.
         engine (ExecutionEngine): The instantiated Rust ExecutionEngine.
     """
-    # 1. Convert to Arrow Table
-    table = pa.Table.from_pandas(df)
+    # 1. Ensure required columns exist
+    if 'symbol' not in df.columns:
+        df = df.copy()
+        df['symbol'] = "SIMULATED_ASSET"
     
-    # 2. Serialize to Arrow Record Batch (optimized for memory sharing)
-    # In a full implementation, we would pass the memory pointer or the buffer 
-    # directly to the Rust module using PyO3's support for Arrow/Pointer types.
+    # 2. Convert to Arrow Table with explicit schema for critical columns
+    schema = pa.schema([
+        ('symbol', pa.string()),
+        ('signal', pa.float64()),
+        ('price', pa.float64())
+    ])
+    
+    # Filter df to match schema columns (handle optional price)
+    cols = ['symbol', 'signal']
+    if 'price' in df.columns:
+        cols.append('price')
+    
+    # Forcing types
+    table = pa.Table.from_pandas(df[cols], schema=schema if 'price' in df.columns else pa.schema([('symbol', pa.string()), ('signal', pa.float64())]))
+    
+    # 3. Export to Arrow Record Batches and pass to Rust zero-copy
     batches = table.to_batches()
     
-    print(f"Orchestrating dispatch for {len(batches)} record batches...")
+    print(f"Orchestrating zero-copy dispatch for {len(batches)} record batches...")
     
     for batch in batches:
-        # Convert batch to dict for simulation (placeholder for real Arrow transfer)
-        batch_dict = batch.to_pydict()
+        # Allocate memory for Arrow C Data Interface structures
+        # ArrowSchema is 72 bytes, ArrowArray is 80 bytes
+        c_schema_buffer = ctypes.create_string_buffer(72)
+        c_array_buffer = ctypes.create_string_buffer(80)
         
-        # Pass signals to the Rust engine
-        engine.process_signals(batch_dict)
+        c_schema_ptr = ctypes.addressof(c_schema_buffer)
+        c_array_ptr = ctypes.addressof(c_array_buffer)
+        
+        # Export the batch to the C structures
+        batch._export_to_c(c_array_ptr, c_schema_ptr)
+        
+        # Pass the pointers to the Rust engine
+        engine.process_signals(c_array_ptr, c_schema_ptr)
 
 def wrap_arrow_buffer(table: pa.Table) -> bytes:
     """

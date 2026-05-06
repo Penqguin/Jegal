@@ -1,3 +1,3 @@
-from ._lib import RiskManager, ExecutionEngine, get_version
+from ._lib import RiskManager, ExecutionEngine, MockBroker, get_version
 
-__all__ = ["RiskManager", "ExecutionEngine", "get_version"]
+__all__ = ["RiskManager", "ExecutionEngine", "MockBroker", "get_version"]

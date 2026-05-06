@@ -23,13 +23,33 @@ A high-performance personal open-source auto trader built with a Python/Rust hyb
     cd jegal
     ```
 
-2. **Compile the Rust bindings:**
+2. **Configure environment variables:**
+
+    Create a `.env` file in the project root. Select your preferred provider by setting `LLM_PROVIDER` (options: `openai`, `anthropic`, `gemini`, `ollama`):
+
+    ```bash
+    # Select your preferred provider
+    LLM_PROVIDER=ollama
+    LLM_MODEL=llama3
+
+    # API keys (only required for cloud providers)
+    # ANTHROPIC_API_KEY=sk-ant-xxx
+    # OPENAI_API_KEY=sk-xxx
+    # GEMINI_API_KEY=xxx
+
+    # IBKR Gateway settings
+    IBKR_HOST=127.0.0.1
+    IBKR_PORT=4002
+    IBKR_CLIENT_ID=1
+    ```
+
+3. **Compile the Rust bindings:**
 
     ```bash
     maturin develop --release
     ```
 
-3. **Install Python dependencies:**
+4. **Install Python dependencies:**
 
     ```bash
     pip install -e .

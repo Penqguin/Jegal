@@ -23,7 +23,7 @@ def load_market_data(file_path: str) -> pd.DataFrame:
     
     # Ensure timestamp is parsed if it exists
     if 'timestamp' in df.columns:
-        df['timestamp'] = pd.to_datetime(df['timestamp'], engine='pyarrow')
+        df['timestamp'] = pd.to_datetime(df['timestamp'])
         
     return df
 

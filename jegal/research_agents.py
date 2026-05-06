@@ -1,36 +1,69 @@
 import os
+import ollama
+import json
 from anthropic import Anthropic
+from openai import OpenAI
+import google.generativeai as genai
 
 class GenericResearchAgent:
     """
-    A generalized agent wrapper that can perform any financial research task
-    based on the provided system prompt.
+    A generalized agent wrapper supporting OpenAI, Anthropic, Gemini, and Ollama.
     """
-    def __init__(self):
-        # Credentials are retrieved at runtime from secure environment variables
-        self.api_key = os.environ.get("ANTHROPIC_API_KEY")
-        if not self.api_key:
-            raise ValueError("ANTHROPIC_API_KEY must be set in the environment.")
-        self.client = Anthropic(api_key=self.api_key)
+    def __init__(self, provider: str = None, model: str = None):
+        self.provider = (provider or os.environ.get("LLM_PROVIDER", "ollama")).lower()
+        self.model = model or os.environ.get("LLM_MODEL", "llama3")
+        
+        # Load stock configuration
+        try:
+            with open("config.json", "r") as f:
+                self.stocks = json.load(f).get("stocks", ["BTC-USD"])
+        except FileNotFoundError:
+            self.stocks = ["BTC-USD"]
+        
+        if self.provider == "anthropic":
+            self.client = Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+        elif self.provider == "openai":
+            self.client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+        elif self.provider == "gemini":
+            genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
+            self.client = genai.GenerativeModel(self.model)
+        elif self.provider == "ollama":
+            self.client = ollama
+        else:
+            raise ValueError(f"Unsupported provider: {self.provider}")
 
-    async def execute_task(self, system_prompt: str, user_prompt: str) -> dict:
+    async def execute_task(self, system_prompt: str, user_prompt: str, symbols: list = None) -> dict:
         """
-        Executes a task with a custom system and user prompt.
+        Executes a task with a custom system and user prompt, focusing on the provided symbols.
         """
-        response = self.client.messages.create(
-            model="claude-3-5-sonnet-20241022",
-            max_tokens=1000,
-            system=system_prompt,
-            messages=[{"role": "user", "content": user_prompt}]
-        )
+        target_symbols = symbols or self.stocks
+        full_user_prompt = f"Focusing on the following stocks/assets: {', '.join(target_symbols)}.\n\n{user_prompt}"
+
+        content = ""
+        if self.provider == "anthropic":
+            response = self.client.messages.create(
+                model=self.model, max_tokens=1000, system=system_prompt,
+                messages=[{"role": "user", "content": full_user_prompt}]
+            )
+            content = response.content[0].text
+        elif self.provider == "openai":
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": full_user_prompt}]
+            )
+            content = response.choices[0].message.content
+        elif self.provider == "gemini":
+            response = self.client.generate_content(f"{system_prompt}\n\n{full_user_prompt}")
+            content = response.text
+        else: # ollama
+            response = self.client.chat(
+                model=self.model,
+                messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": full_user_prompt}]
+            )
+            content = response.message.content
         
-        # Simplified parser logic: in production, use structured JSON output
-        content = response.content[0].text
-        print(f"Agent response: {content}")
+        print(f"Agent ({self.provider}) response for {target_symbols}: {content}")
         
-        # Determine action from response (simple parsing logic)
-        action = "HOLD"
-        if "BUY" in content.upper(): action = "BUY"
-        elif "SELL" in content.upper(): action = "SELL"
-        
-        return {"action": action, "symbol": "BTC-USD", "target": 75000.0}
+        action = "BUY" if "BUY" in content.upper() else "SELL" if "SELL" in content.upper() else "HOLD"
+        # Return the research data mapped to the requested symbols
+        return {"action": action, "symbols": target_symbols, "research_summary": content}

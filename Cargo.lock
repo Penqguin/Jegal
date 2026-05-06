@@ -1015,6 +1015,7 @@ dependencies = [
  "arrow-data",
  "arrow-schema",
  "async-trait",
+ "byteorder",
  "ibapi",
  "pyo3",
  "questrade-client",

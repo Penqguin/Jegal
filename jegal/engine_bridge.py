@@ -54,6 +54,18 @@ def dispatch_to_execution_engine(df: pd.DataFrame, engine: ExecutionEngine):
         # Pass the pointers to the Rust engine
         engine.process_signals(c_array_ptr, c_schema_ptr)
 
+def dispatch_agent_results(results: list, engine: ExecutionEngine):
+    """
+    Converts list of agent result dictionaries into Arrow format for Rust handoff.
+    """
+    df = pd.DataFrame(results)
+    # Ensure mapping of agent signal action to numerical signal
+    signal_map = {"BUY": 1.0, "SELL": -1.0, "HOLD": 0.0}
+    df['signal'] = df['action'].map(signal_map).fillna(0.0)
+    
+    # Delegate to the existing engine bridge
+    dispatch_to_execution_engine(df, engine)
+
 def wrap_arrow_buffer(table: pa.Table) -> bytes:
     """
     Serializes an Arrow table into a buffer that can be shared.

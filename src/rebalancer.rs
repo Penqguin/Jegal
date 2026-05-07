@@ -57,6 +57,7 @@ impl<'a> HybridRebalancer<'a> {
             
             // For simplicity, we assume price=1.0 for weight calculation if we don't have real-time data
             // In a production system, we'd fetch live prices here.
+            // TODO: Fetch live prices
             let current_qty = positions.get(&asset).cloned().unwrap_or(0.0);
             let current_weight = if balance > 0.0 { current_qty / balance } else { 0.0 };
             

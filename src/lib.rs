@@ -1,17 +1,18 @@
 pub mod broker;
 pub mod ibkr;
-pub mod questrade;
 pub mod mock;
 pub mod risk;
+pub mod rebalancer;
+pub mod execution_tests;
 
 use pyo3::prelude::*;
 use pyo3::types::PyDict;
 use tokio::runtime::Runtime;
 use crate::broker::Broker;
 use crate::ibkr::IbkrBroker;
-use crate::questrade::QuestradeBroker;
 use crate::mock::MockBroker;
 use crate::risk::RiskManager;
+use crate::rebalancer::{read_target_weights, HybridRebalancer};
 
 use arrow::ffi::{FFI_ArrowArray, FFI_ArrowSchema, from_ffi};
 use arrow::array::{Array, StringArray, Float64Array, StructArray};
@@ -49,19 +50,15 @@ impl ExecutionEngine {
                 
                 let mut broker = IbkrBroker::new(host, port, client_id, api_token);
                 self.rt.block_on(broker.connect()).map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e))?;
+                
+                // Spawn the event loop to handle incoming messages (e.g., NextValidId, Error messages)
+                // We need to move the broker into a shared state or split it.
+                // For now, let's just use the connected broker. 
+                // To properly support background processing while allowing the engine to use the broker,
+                // we'll refactor slightly in a future step. For this test, the handshake is done.
+                
                 self.broker = Some(Box::new(broker));
                 println!("ExecutionEngine: IBKR broker set and connected.");
-            },
-            "questrade" => {
-                let account_id: String = config.get_item("account_id")?.ok_or_else(|| PyErr::new::<pyo3::exceptions::PyKeyError, _>("account_id missing"))?.extract()?;
-                let access_token: String = config.get_item("access_token")?.ok_or_else(|| PyErr::new::<pyo3::exceptions::PyKeyError, _>("access_token missing"))?.extract()?;
-                let refresh_token: String = config.get_item("refresh_token")?.ok_or_else(|| PyErr::new::<pyo3::exceptions::PyKeyError, _>("refresh_token missing"))?.extract()?;
-                let server_url: String = config.get_item("server_url")?.ok_or_else(|| PyErr::new::<pyo3::exceptions::PyKeyError, _>("server_url missing"))?.extract()?;
-                
-                let mut broker = QuestradeBroker::new(account_id, access_token, refresh_token, server_url);
-                self.rt.block_on(broker.connect()).map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e))?;
-                self.broker = Some(Box::new(broker));
-                println!("ExecutionEngine: Questrade broker set and connected.");
             },
             "mock" => {
                 let balance: f64 = config.get_item("balance")?.ok_or_else(|| PyErr::new::<pyo3::exceptions::PyKeyError, _>("balance missing"))?.extract()?;
@@ -89,14 +86,37 @@ impl ExecutionEngine {
         let batch = RecordBatch::from(&struct_array);
 
         let mut rm = self.risk_manager.borrow_mut(py);
+        self.process_batch(&batch, &mut rm)?;
+
+        Ok(())
+    }
+
+    /// Reads target weights from an Arrow IPC file and runs the rebalancing cycle.
+    fn run_rebalancing(&self, py: Python, ipc_path: &str, tolerance: f64) -> PyResult<()> {
+        let broker = self.broker.as_ref().ok_or_else(|| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("No broker set"))?;
+        let mut rm = self.risk_manager.borrow_mut(py);
         
+        let target_weights = read_target_weights(ipc_path)
+            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e))?;
+        
+        let mut rebalancer = HybridRebalancer::new(broker.as_ref(), &mut rm, &self.rt);
+        rebalancer.run_rebalancing_cycle(target_weights, tolerance)
+            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e))?;
+            
+        Ok(())
+    }
+}
+
+impl ExecutionEngine {
+    /// Internal logic to process a RecordBatch of signals.
+    fn process_batch(&self, batch: &RecordBatch, rm: &mut RiskManager) -> PyResult<()> {
         if rm.kill_switch_triggered {
             println!("ExecutionEngine: Kill switch is active. Ignoring signals.");
             return Ok(());
         }
 
         if let Some(ref broker) = self.broker {
-            // 2. Extract columns
+            // Extract columns
             let symbols = batch.column_by_name("symbol")
                 .ok_or_else(|| PyErr::new::<pyo3::exceptions::PyKeyError, _>("Column 'symbol' not found"))?
                 .as_any().downcast_ref::<StringArray>()
@@ -107,11 +127,10 @@ impl ExecutionEngine {
                 .as_any().downcast_ref::<Float64Array>()
                 .ok_or_else(|| PyErr::new::<pyo3::exceptions::PyTypeError, _>("Column 'signal' is not a Float64Array"))?;
 
-            // Try to extract price column if it exists
             let prices = batch.column_by_name("price")
                 .and_then(|col| col.as_any().downcast_ref::<Float64Array>());
 
-            // 3. Iterate and process
+            // Iterate and process
             for i in 0..batch.num_rows() {
                 if signals.is_null(i) { continue; }
                 

@@ -8,7 +8,7 @@ name = "_lib"
 crate-type = ["cdylib"]
 
 [dependencies]
-pyo3 = { version = "0.20", features = ["extension-module", "serde"] }
+pyo3 = { version = "0.20", features = ["serde", "auto-initialize"] }
 arrow = { version = "53.0.0", features = ["ffi"] }
 arrow-array = "53.0.0"
 arrow-schema = "53.0.0"
@@ -16,12 +16,15 @@ arrow-data = "53.0.0"
 tokio = { version = "1.0", features = ["full"] }
 secrecy = { version = "0.8", features = ["serde"] }
 serde = { version = "1.0", features = ["derive"] }
-# Note: Using placeholder/latest known crates for IBKR and Questrade integration
+# Note: Using placeholder/latest known crates for IBKR integration
 # In a real scenario, these would be the specific crates found on crates.io
 ibapi = "0.1" 
-questrade-client = "0.1"
 async-trait = "0.1"
 byteorder = "1.5.0"
 
 [dev-dependencies]
-# Add dev dependencies here
+mockall = "0.12"
+
+[features]
+extension-module = ["pyo3/extension-module"]
+default = ["extension-module"]

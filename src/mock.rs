@@ -30,6 +30,11 @@ impl Broker for MockBroker {
         Ok(self.balance)
     }
 
+    async fn get_positions(&self) -> Result<std::collections::HashMap<String, f64>, String> {
+        println!("MockBroker: Fetching simulated positions (empty).");
+        Ok(std::collections::HashMap::new())
+    }
+
     async fn place_order(&self, symbol: &str, quantity: f64, price: f64) -> Result<String, String> {
         println!("MockBroker: Simulating order for {} @ {} (Qty: {})", symbol, price, quantity);
         Ok(format!("MOCK-ORD-{}", symbol))

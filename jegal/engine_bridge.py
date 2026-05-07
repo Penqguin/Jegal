@@ -66,6 +66,29 @@ def dispatch_agent_results(results: list, engine: ExecutionEngine):
     # Delegate to the existing engine bridge
     dispatch_to_execution_engine(df, engine)
 
+def write_target_weights(df: pd.DataFrame, path: str):
+    """
+    Writes target portfolio weights to an Arrow IPC stream file for the Rust engine.
+    
+    Args:
+        df (pd.DataFrame): DataFrame with 'ticker' and 'weight' columns.
+        path (str): File path for the Arrow IPC stream.
+    """
+    # Ensure correct types and columns
+    schema = pa.schema([
+        ('ticker', pa.string()),
+        ('weight', pa.float64())
+    ])
+    
+    table = pa.Table.from_pandas(df[['ticker', 'weight']], schema=schema)
+    
+    # Write to IPC stream (this will be memory-mapped by Rust)
+    with pa.OSFile(path, 'wb') as f:
+        with pa.ipc.new_stream(f, table.schema) as writer:
+            writer.write_table(table)
+    
+    print(f"Target weights written to {path} using Arrow IPC.")
+
 def wrap_arrow_buffer(table: pa.Table) -> bytes:
     """
     Serializes an Arrow table into a buffer that can be shared.

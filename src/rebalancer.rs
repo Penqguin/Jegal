@@ -55,29 +55,35 @@ impl<'a> HybridRebalancer<'a> {
         for asset in all_assets {
             let target_weight = target_map.get(&asset).cloned().unwrap_or(0.0);
             
-            // For simplicity, we assume price=1.0 for weight calculation if we don't have real-time data
-            // In a production system, we'd fetch live prices here.
-            // TODO: Fetch live prices
+            // Fetch live price for accurate valuation
+            let price = self.rt.block_on(self.broker.get_price(&asset)).unwrap_or(1.0);
+            
             let current_qty = positions.get(&asset).cloned().unwrap_or(0.0);
-            let current_weight = if balance > 0.0 { current_qty / balance } else { 0.0 };
+            let current_value = current_qty * price;
+            let total_value = balance + positions.iter().map(|(sym, qty)| {
+                let p = self.rt.block_on(self.broker.get_price(sym)).unwrap_or(1.0);
+                qty * p
+            }).sum::<f64>();
+
+            let current_weight = if total_value > 0.0 { current_value / total_value } else { 0.0 };
             
             let deviation = (target_weight - current_weight).abs();
             if deviation > tolerance {
-                let trade_qty = (target_weight - current_weight) * balance;
-                trades.push((asset, trade_qty));
+                let target_value = target_weight * total_value;
+                let trade_qty = (target_value - current_value) / price;
+                trades.push((asset, trade_qty, price));
             }
         }
 
         // 5. Execute trades: Sell first to generate cash
         trades.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap());
 
-        for (asset, qty) in trades {
-            if qty == 0.0 { continue; }
+        for (asset, qty, price) in trades {
+            if qty.abs() < 0.0001 { continue; }
             
             // Risk Check
-            let price = 1.0; // Simulated price
             if self.risk_manager.validate_order(&asset, qty, price).map_err(|e| e.to_string())? {
-                println!("Rebalancer: Executing trade for {}: Qty {}", asset, qty);
+                println!("Rebalancer: Executing trade for {}: Qty {} @ {}", asset, qty, price);
                 let result = self.rt.block_on(self.broker.place_order(&asset, qty, price));
                 match result {
                     Ok(order_id) => {

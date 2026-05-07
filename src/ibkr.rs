@@ -7,6 +7,7 @@ use tokio::sync::Mutex;
 use std::sync::Arc;
 use byteorder::{BigEndian, WriteBytesExt};
 use std::time::{SystemTime, UNIX_EPOCH};
+use dashmap::DashMap;
 
 pub struct IbkrBroker {
     pub host: String,
@@ -15,6 +16,7 @@ pub struct IbkrBroker {
     api_token: Option<Secret<String>>,
     stream: Option<Arc<Mutex<TcpStream>>>,
     pub next_order_id: Arc<Mutex<i32>>,
+    pub market_data: Arc<DashMap<String, f64>>,
     }
 
 
@@ -31,12 +33,14 @@ impl IbkrBroker {
             api_token: api_token.map(Secret::new),
             stream: None,
             next_order_id: Arc::new(Mutex::new(1)),
+            market_data: Arc::new(DashMap::new()),
         }
     }
 
     pub async fn start_event_loop(&mut self) -> Result<(), String> {
         let stream_arc = self.stream.as_ref().ok_or("No active connection")?.clone();
         let id_arc = self.next_order_id.clone();
+        let md_arc = self.market_data.clone();
         
         loop {
             let mut stream = stream_arc.lock().await;
@@ -62,6 +66,18 @@ impl IbkrBroker {
                             }
                         }
                     },
+                    "4" => { // TickPrice
+                        // Field 0: "4", 1: tickerId, 2: tickType, 3: price, ...
+                        let ticker_id = parts.get(1).unwrap_or(&"0");
+                        let tick_type = parts.get(2).unwrap_or(&"0");
+                        let price = parts.get(3).unwrap_or(&"0.0");
+                        
+                        if *tick_type == "4" || *tick_type == "2" { // Last or Ask
+                            if let Ok(p) = price.parse::<f64>() {
+                                md_arc.insert(ticker_id.to_string(), p); 
+                            }
+                        }
+                    },
                     _ => Self::dispatch_message(msg_id, &parts),
                 }
             }
@@ -74,16 +90,7 @@ impl IbkrBroker {
             "101" => println!("IBKR: Received AccountUpdate: {:?}", parts),
             "102" => println!("IBKR: Received OrderStatus: {:?}", parts),
             "103" => println!("IBKR: Received OpenOrder: {:?}", parts),
-            "4" => {
-                let error_code = parts.get(3).unwrap_or(&"Unknown");
-                let error_msg = parts.get(4).unwrap_or(&"No message");
-                match *error_code {
-                    "320" => eprintln!("IBKR ERROR [320]: Error reading request. Protocol mismatch detected. Check message fields."),
-                    "502" => eprintln!("IBKR ERROR [502]: Couldn't connect to TWS. Confirm that 'Enable ActiveX and Socket Clients' is enabled and the port is correct."),
-                    "504" => eprintln!("IBKR ERROR [504]: Not connected. Ensure Gateway/TWS is logged in."),
-                    _ => eprintln!("IBKR ERROR [{}]: {}", error_code, error_msg),
-                }
-            },
+            "4" => {}, // Handled in loop
             _ => println!("IBKR: Received message ID {}: {:?}", msg_id, parts),
         }
     }
@@ -100,10 +107,8 @@ impl IbkrBroker {
     async fn perform_handshake(&mut self) -> Result<(), String> {
         if let Some(ref stream_arc) = self.stream {
             let mut stream = stream_arc.lock().await;
-            // 1. Initial API prefix
             stream.write_all(b"API\0").await.map_err(|e| e.to_string())?;
             
-            // 2. Handshake version (v100..175)
             let handshake = "v100..175"; 
             let mut msg = Vec::new();
             WriteBytesExt::write_u32::<BigEndian>(&mut msg, handshake.len() as u32).map_err(|e| e.to_string())?;
@@ -111,12 +116,9 @@ impl IbkrBroker {
             stream.write_all(&msg).await.map_err(|e| e.to_string())?;
             drop(stream);
 
-            // 3. Start API (Msg ID 71)
-            // Use Version 2 for compatibility
             let start_api = format!("71\02\0{}\0\0", self.client_id);
             Self::send_message_internal(stream_arc, &start_api).await?;
 
-            // 4. Synchronously wait for Next Valid ID (Msg ID 9)
             let mut stream = stream_arc.lock().await;
             let mut len_buf = [0u8; 4];
             stream.read_exact(&mut len_buf).await.map_err(|e| e.to_string())?;
@@ -167,9 +169,19 @@ impl Broker for IbkrBroker {
     }
 
     async fn get_positions(&self) -> Result<std::collections::HashMap<String, f64>, String> {
-        // In a real implementation, we would send a request to IBKR (Msg ID 61) 
-        // and handle the asynchronous response. For now, we return empty.
         Ok(std::collections::HashMap::new())
+    }
+
+    async fn get_price(&self, symbol: &str) -> Result<f64, String> {
+        if let Some(ref stream_arc) = self.stream {
+            let ticker_id = "1";
+            let request = format!("1\0{}\0{}\0STK\0SMART\0NASDAQ\0USD\0\0false\0false\0", ticker_id, symbol);
+            Self::send_message_internal(stream_arc, &request).await?;
+            tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+            Ok(self.market_data.get(ticker_id).map(|r| *r).unwrap_or(0.0))
+        } else {
+            Err("No active connection".to_string())
+        }
     }
 
     async fn place_order(&self, symbol: &str, quantity: f64, price: f64) -> Result<String, String> {
@@ -183,22 +195,17 @@ impl Broker for IbkrBroker {
             let qty_str = quantity.abs().to_string();
             let id_str = order_id.to_string();
             
-            // Standard V100+ placeOrder fields for Version 175
-            // Using MKT order for testing to avoid price range rejections
             let mut f = vec![
                 "3", &id_str, "0", symbol, "STK", "", "0", "", "", 
                 "SMART", "NASDAQ", "USD", "", "", "", "", action, &qty_str, "MKT", 
-                "", "", "DAY", "", "", "", "0", "", "1" // 27: transmit
+                "", "", "DAY", "", "", "", "0", "", "1" 
             ];
             
-            // Pad the rest with ONLY empty strings (avoiding "0" which breaks dates)
             while f.len() < 165 {
                 f.push("");
             }
             
             let order_msg = f.join("\0") + "\0";
-            
-            println!("IBKR: Transmitting MKT Order {} for {} (Padded with empty strings)...", order_id, symbol);
             Self::send_message_internal(stream_arc, &order_msg).await?;
             
             Ok(format!("IBKR-REQ-{}", order_id))

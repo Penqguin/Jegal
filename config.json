@@ -1,3 +1,11 @@
 {
-  "stocks": []
+  "sectors": {
+    "tech": true,
+    "health": false,
+    "metals": true,
+    "crypto": false,
+    "energy": true
+  },
+  "manual_watchlist": [],
+  "dynamic_watchlist": []
 }

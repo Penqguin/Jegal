@@ -51,11 +51,19 @@ impl ExecutionEngine {
                 let mut broker = IbkrBroker::new(host, port, client_id, api_token);
                 self.rt.block_on(broker.connect()).map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e))?;
                 
-                // Spawn the event loop to handle incoming messages (e.g., NextValidId, Error messages)
-                // We need to move the broker into a shared state or split it.
-                // For now, let's just use the connected broker. 
-                // To properly support background processing while allowing the engine to use the broker,
-                // we'll refactor slightly in a future step. For this test, the handshake is done.
+                // Spawn the event loop to handle incoming messages
+                if let Some(reader) = broker.take_reader() {
+                    let id_arc = broker.next_order_id.clone();
+                    let md_arc = broker.market_data.clone();
+                    let res_arc = broker.account_responders.clone();
+                    
+                    self.rt.spawn(async move {
+                        if let Err(e) = IbkrBroker::start_event_loop(reader, id_arc, md_arc, res_arc).await {
+                            eprintln!("IBKR Event Loop Error: {}", e);
+                        }
+                    });
+                    println!("ExecutionEngine: IBKR event loop spawned.");
+                }
                 
                 self.broker = Some(Box::new(broker));
                 println!("ExecutionEngine: IBKR broker set and connected.");
@@ -89,6 +97,20 @@ impl ExecutionEngine {
         self.process_batch(&batch, &mut rm)?;
 
         Ok(())
+    }
+
+    /// Returns the current account balance from the broker.
+    fn get_balance(&self) -> PyResult<f64> {
+        let broker = self.broker.as_ref().ok_or_else(|| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("No broker set"))?;
+        self.rt.block_on(broker.get_account_balance())
+            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e))
+    }
+
+    /// Returns the current positions from the broker.
+    fn get_positions(&self) -> PyResult<std::collections::HashMap<String, f64>> {
+        let broker = self.broker.as_ref().ok_or_else(|| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>("No broker set"))?;
+        self.rt.block_on(broker.get_positions())
+            .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(e))
     }
 
     /// Reads target weights from an Arrow IPC file and runs the rebalancing cycle.

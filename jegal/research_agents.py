@@ -75,29 +75,32 @@ class FinancialResearchAgent(GenericResearchAgent):
     def __init__(self, provider: str = None, model: str = None):
         super().__init__(provider, model)
     
-    async def perform_market_research(self, symbols: list = None) -> tuple[str, dict]:
+    async def perform_market_research(self, symbols: list = None, active_sectors: list = None, current_portfolio: dict = None) -> tuple[str, dict]:
         """
-        Orchestrates research using MCP data connectors and returns a dual output:
-        1. Human-readable Markdown trade journal.
-        2. Machine-readable JSON target weights.
+        Orchestrates research focusing on active sectors and existing portfolio context.
         """
         target_symbols = symbols or self.stocks
+        sectors_str = ", ".join(active_sectors) if active_sectors else "All"
+        portfolio_str = json.dumps(current_portfolio) if current_portfolio else "Empty"
         
-        system_prompt = """
+        system_prompt = f"""
         You are a senior quantitative researcher and macro strategist.
-        Your goal is to analyze the provided financial data and news for the requested symbols.
+        ACTIVE SECTORS: {sectors_str}
+        CURRENT PORTFOLIO: {portfolio_str}
+        
+        Your goal is to analyze the provided symbols AND suggest new ones within the ACTIVE SECTORS 
+        if they offer better risk-adjusted returns or fit the current portfolio better.
         
         DUAL-OUTPUT REQUIREMENT:
-        1. HUMAN-READABLE: Provide a 'Trade Journal' in Markdown format explaining your fundamental 
-           and macroeconomic reasoning. Focus on why you are choosing these specific weights.
+        1. HUMAN-READABLE: Provide a 'Trade Journal' in Markdown format explaining your reasoning. 
         2. MACHINE-READABLE: Provide a strict JSON object representing target portfolio weights.
-           Format: {"weights": [{"ticker": "SYMBOL", "weight": PERCENTAGE_AS_FLOAT}, ...]}
+           Format: {{"weights": [{{"ticker": "SYMBOL", "weight": PERCENTAGE_AS_FLOAT}}, ...]}}
            Ensure the total weight does not exceed 1.0 (100%).
         
         Respond with BOTH formats. Wrap the JSON in triple backticks with 'json' identifier.
         """
         
-        user_prompt = f"Conduct research on {', '.join(target_symbols)} based on latest SEC filings, news, and market data."
+        user_prompt = f"Conduct research on {', '.join(target_symbols)} and identify high-alpha opportunities in {sectors_str} based on latest SEC filings, news, and market data."
         
         # In a real scenario, we would use MCP here to fetch data.
         # For this implementation, we simulate the data gathering via the LLM prompt.
@@ -144,3 +147,57 @@ class FinancialResearchAgent(GenericResearchAgent):
             weights = {"weights": [{"ticker": s, "weight": w} for s in target_symbols]}
             
         return journal, weights
+
+
+class NewsScannerAgent(GenericResearchAgent):
+    """
+    Agent focused on scanning news for new catalysts and identifying potential tickers to add to the watchlist.
+    """
+    async def scan_for_catalysts(self, active_sectors: list = None) -> list:
+        """
+        Simulates scanning news feeds (MT Newswires, etc.) for significant events within active sectors.
+        """
+        sectors_str = ", ".join(active_sectors) if active_sectors else "any"
+        system_prompt = f"""
+        You are an AI News Analyst. Your job is to identify companies with significant news catalysts 
+        within the following sectors: {sectors_str}.
+        
+        OUTPUT REQUIREMENT:
+        Provide a JSON list of tickers and their likely sector.
+        Format: {{"catalysts": [{{"ticker": "SYMBOL", "sector": "tech|health|metals|crypto|other", "reason": "SHORT_DESCRIPTION"}}]}}
+        """
+        user_prompt = f"Scan current market headlines for major catalysts and high-momentum stocks in the {sectors_str} sectors."
+        
+        # Simulate LLM response
+        content = ""
+        if self.provider == "ollama":
+            response = self.client.chat(
+                model=self.model,
+                messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}]
+            )
+            content = response.message.content
+        else:
+            # Fallback for other providers if needed
+            content = "{\"catalysts\": [{\"ticker\": \"NVDA\", \"sector\": \"tech\", \"reason\": \"AI chip demand surge\"}]}"
+
+        try:
+            if "```json" in content:
+                json_str = content.split("```json")[1].split("```")[0].strip()
+                return json.loads(json_str).get("catalysts", [])
+            elif "{" in content:
+                json_str = content[content.find("{"):content.rfind("}")+1]
+                return json.loads(json_str).get("catalysts", [])
+        except:
+            return []
+        return []
+
+class EarningsReviewerAgent(GenericResearchAgent):
+    """
+    Agent focused on deep fundamental analysis of earnings reports.
+    """
+    async def review_earnings(self, ticker: str) -> str:
+        system_prompt = f"Analyze the latest earnings report and financial health of {ticker}. Provide a summary and a conviction score (1-10)."
+        user_prompt = f"Focus on revenue growth, guidance, and margin trends for {ticker}."
+        
+        result = await self.execute_task(system_prompt, user_prompt, symbols=[ticker])
+        return result.get("research_summary", "No research found.")

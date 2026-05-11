@@ -1,18 +1,21 @@
 # Jegal
 
-A high-performance personal open-source auto trader built with a Python/Rust hybrid architecture.
+A high-performance personal open-source auto trader built with a Python/Rust hybrid architecture. Jegal combines autonomous LLM-driven research with a low-latency Rust execution engine.
 
-## Architecture
+## Features
 
-- **Rust (Execution Engine):** Handles live execution, order management, and real-time risk checks (the "kill switch") to ensure low latency and zero garbage collection pauses.
-- **Python (Research Layer):** Used for strategy orchestration, backtesting, and data analysis leveraging the NumPy/Pandas/PyArrow ecosystem.
-- **Data Transfer:** Uses Apache Arrow for zero-copy memory sharing between Python and Rust.
+- **Autonomous Research:** LangGraph-powered pipeline featuring News Scanners, Financial Researchers, and Earnings Reviewers.
+- **Hybrid Architecture:** Python for research and orchestration; Rust for execution and risk management.
+- **Zero-Copy Data Handoff:** Uses Apache Arrow for ultra-fast communication between Python and Rust.
+- **Config-Driven:** Control risk, budget, broker settings, and LLM preferences through a single `config.json`.
+- **Multi-LLM Support:** Integrated with Ollama (local), OpenAI, Anthropic, and Gemini.
 
 ## Prerequisites
 
 - [Rust](https://www.rust-lang.org/tools/install) (latest stable)
-- [Python 3.8+](https://www.python.org/downloads/)
+- [Python 3.10+](https://www.python.org/downloads/)
 - [Maturin](https://github.com/PyO3/maturin) (`pip install maturin`)
+- [Ollama](https://ollama.com/) (optional, for local LLM support)
 
 ## Installation & Setup
 
@@ -25,58 +28,70 @@ A high-performance personal open-source auto trader built with a Python/Rust hyb
 
 2. **Configure environment variables:**
 
-    Create a `.env` file in the project root. Select your preferred provider by setting `LLM_PROVIDER` (options: `openai`, `anthropic`, `gemini`, `ollama`):
+    Create a `.env` file for API keys if using cloud providers:
 
     ```bash
-    # Select your preferred provider
-    LLM_PROVIDER=ollama
-    LLM_MODEL=llama3
-
     # API keys (only required for cloud providers)
     # ANTHROPIC_API_KEY=sk-ant-xxx
     # OPENAI_API_KEY=sk-xxx
     # GEMINI_API_KEY=xxx
-
-    # IBKR Gateway settings
-    IBKR_HOST=127.0.0.1
-    IBKR_PORT=4002
-    IBKR_CLIENT_ID=1
     ```
 
-3. **Compile the Rust bindings:**
+3. **Configure the system:**
+
+    Edit `config.json` to set your risk limits, budget, and broker details:
+
+    ```json
+    {
+      "risk": {
+        "max_exposure_per_symbol": 50000.0,
+        "max_total_exposure": 200000.0,
+        "drawdown_limit": 5000.0
+      },
+      "broker": {
+        "type": "ibkr",
+        "host": "127.0.0.1",
+        "port": 7497,
+        "client_id": 1
+      },
+      "llm": {
+        "provider": "ollama",
+        "model": "llama3"
+      }
+    }
+    ```
+
+4. **Compile the Rust bindings:**
 
     ```bash
     maturin develop --release
     ```
 
-4. **Install Python dependencies:**
+5. **Install Python dependencies:**
 
     ```bash
-    pip install -e .
+    pip install -r requirements.txt
     ```
 
 ## Usage
 
-To run the full integrated system:
+To start the autonomous trading system (the "Watcher"):
 
 ```bash
 python main.py
 ```
 
-To run individual research scripts:
+This will run the research and execution pipeline at intervals defined in `config.json`.
 
-```bash
-python jegal/strategy.py
-```
+## Documentation
 
-## Architecture Decisions
-
-For detailed architectural reasoning, please refer to our [ADRs](docs/adr/).
+- **Architecture:** See [ADR 1: Hybrid Architecture](docs/adr/0001-hybrid-architecture-with-arrow.md) and [ADR 2: Autonomous Pipeline](docs/adr/0002-autonomous-research-and-execution-pipeline.md).
+- **Research Logs:** Trade journals and research reports are saved to `logs/research_report.md`.
 
 ## Security
 
-- API keys and secrets should be stored in a local `.env` file or passed via environment variables.
-- **NEVER** commit secrets to version control. The `.gitignore` is configured to protect these.
+- API keys and secrets should be stored in a local `.env` file.
+- Risk limits are enforced in Rust at the execution level and cannot be bypassed by the Python research layer.
 
 ## Testing
 

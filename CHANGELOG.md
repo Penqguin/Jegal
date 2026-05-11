@@ -5,20 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.3.0] - 2026-05-07
+## [0.4.0] - 2026-05-09
 
 ### Added
-- **Target Portfolio Weight Architecture**: Implemented a new rebalancing model where the research layer dictates percentage-based target allocations.
-- **Hybrid Threshold-Based Rebalancing**: Added a Rust rebalancer module that executes trades only when asset weights deviate from targets by a configurable threshold (e.g., 5%).
-- **AI Research Layer (The Brains)**:
-    - Added `FinancialResearchAgent` with support for Model Context Protocol (MCP) data connectors (Morningstar, SEC filings, News).
-    - Implemented **Dual-Output Requirement**: Agent generates a human-readable Markdown 'trade journal' and a machine-readable JSON target weight object.
-- **Arrow IPC Handoff**: Dedicated Arrow IPC stream bus for zero-copy transfer of portfolio targets from Python to Rust.
-- **Enhanced Broker Trait**: Added support for position and balance fetching across all broker adapters.
+- **Autonomous Watcher Loop**: `main.py` now implements a continuous watcher that triggers the research and execution pipeline at configurable intervals.
+- **Centralized Configuration**: All system parameters (risk, budget, broker, LLM, and watcher) are now consolidated in `config.json`.
+- **LangGraph Integration**: The research layer now uses a stateful graph to manage news discovery, deep research, and execution handoff.
+- **Dynamic Watchlist Discovery**: `NewsScannerAgent` now scans live news via free sources (DuckDuckGo/YFinance) and updates the dynamic watchlist in real-time.
+- **Improved LLM Support**: Added support for choosing LLM provider (Ollama, OpenAI, Anthropic, Gemini) and model directly in `config.json`.
+- **ADR 2**: Documented the architectural shift toward an autonomous research and execution pipeline.
 
 ### Changed
-- Updated `research_main.py` to orchestrate the new AI-driven rebalancing workflow.
-- Integrated `RiskManager` checks directly into the rebalancing execution loop.
+- Refactored `main.py` from a simulation script to a production-ready entry point.
+- Updated `FinancialResearchAgent` and `NewsScannerAgent` to prefer configuration from `config.json`.
+- Enhanced `execution_node` to use live broker and risk settings from centralized config.
 
 ## [0.2.0] - 2026-05-05
 

@@ -7,5 +7,34 @@
     "energy": true
   },
   "manual_watchlist": [],
-  "dynamic_watchlist": []
+  "dynamic_watchlist": [
+    "INTC",
+    "NVDA"
+  ],
+  "risk": {
+    "max_exposure_per_symbol": 50000.0,
+    "max_total_exposure": 200000.0,
+    "drawdown_limit": 5000.0,
+    "max_orders_per_window": 50,
+    "velocity_window_seconds": 60
+  },
+  "broker": {
+    "type": "ibkr",
+    "host": "127.0.0.1",
+    "port": 7497,
+    "client_id": 1,
+    "paper_trading": true
+  },
+  "budget": {
+    "total_budget": 100000.0,
+    "currency": "CAD"
+  },
+  "llm": {
+    "provider": "ollama",
+    "model": "gemma4:e4b"
+  },
+  "watcher": {
+    "enabled": true,
+    "interval_minutes": 10
+  }
 }

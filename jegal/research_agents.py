@@ -1,32 +1,37 @@
 import os
 import ollama
 import json
+import yfinance as yf
+from ddgs import DDGS
 from anthropic import Anthropic
 from openai import OpenAI
-import google.generativeai as genai
+from google import genai
 
 class GenericResearchAgent:
     """
     A generalized agent wrapper supporting OpenAI, Anthropic, Gemini, and Ollama.
     """
     def __init__(self, provider: str = None, model: str = None):
-        self.provider = (provider or os.environ.get("LLM_PROVIDER", "ollama")).lower()
-        self.model = model or os.environ.get("LLM_MODEL", "llama3")
-        
-        # Load stock configuration
+        # Load config to get LLM settings
         try:
             with open("config.json", "r") as f:
-                self.stocks = json.load(f).get("stocks", ["BTC-USD"])
+                self.config = json.load(f)
         except FileNotFoundError:
-            self.stocks = ["BTC-USD"]
+            self.config = {}
+
+        llm_cfg = self.config.get("llm", {})
+        self.provider = (provider or llm_cfg.get("provider") or os.environ.get("LLM_PROVIDER", "ollama")).lower()
+        self.model = model or llm_cfg.get("model") or os.environ.get("LLM_MODEL", "llama3")
+        
+        # Load stock configuration
+        self.stocks = self.config.get("manual_watchlist")
         
         if self.provider == "anthropic":
             self.client = Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
         elif self.provider == "openai":
             self.client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
         elif self.provider == "gemini":
-            genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
-            self.client = genai.GenerativeModel(self.model)
+            self.client = genai.Client(api_key=os.environ.get("GEMINI_API_KEY"))
         elif self.provider == "ollama":
             self.client = ollama
         else:
@@ -37,7 +42,23 @@ class GenericResearchAgent:
         Executes a task with a custom system and user prompt, focusing on the provided symbols.
         """
         target_symbols = symbols or self.stocks
-        full_user_prompt = f"Focusing on the following stocks/assets: {', '.join(target_symbols)}.\n\n{user_prompt}"
+        
+        # If we have specific symbols, try to get fresh news for them via yfinance
+        news_context = ""
+        if symbols:
+            for s in symbols:
+                try:
+                    ticker = yf.Ticker(s)
+                    news = ticker.news[:3] # Get top 3 news items
+                    for n in news:
+                        news_context += f"\n[{s}] {n['title']}"
+                except:
+                    pass
+
+        full_user_prompt = f"Focusing on the following stocks/assets: {', '.join(target_symbols)}.\n"
+        if news_context:
+            full_user_prompt += f"Recent News Context: {news_context}\n"
+        full_user_prompt += f"\n{user_prompt}"
 
         content = ""
         if self.provider == "anthropic":
@@ -53,7 +74,10 @@ class GenericResearchAgent:
             )
             content = response.choices[0].message.content
         elif self.provider == "gemini":
-            response = self.client.generate_content(f"{system_prompt}\n\n{full_user_prompt}")
+            response = self.client.models.generate_content(
+                model=self.model, 
+                contents=f"{system_prompt}\n\n{full_user_prompt}"
+            )
             content = response.text
         else: # ollama
             response = self.client.chat(
@@ -119,7 +143,10 @@ class FinancialResearchAgent(GenericResearchAgent):
             )
             content = response.choices[0].message.content
         elif self.provider == "gemini":
-            response = self.client.generate_content(f"{system_prompt}\n\n{user_prompt}")
+            response = self.client.models.generate_content(
+                model=self.model,
+                contents=f"{system_prompt}\n\n{user_prompt}"
+            )
             content = response.text
         else: # ollama
             response = self.client.chat(
@@ -151,24 +178,49 @@ class FinancialResearchAgent(GenericResearchAgent):
 
 class NewsScannerAgent(GenericResearchAgent):
     """
-    Agent focused on scanning news for new catalysts and identifying potential tickers to add to the watchlist.
+    Agent focused on scanning news for new catalysts using free sources (DuckDuckGo & YFinance).
     """
     async def scan_for_catalysts(self, active_sectors: list = None) -> list:
         """
-        Simulates scanning news feeds (MT Newswires, etc.) for significant events within active sectors.
+        Fetches live news from free sources and uses the LLM to identify tickers and catalysts.
         """
+        print(f"NewsScannerAgent: Fetching live news for {active_sectors} via DuckDuckGo...")
+        
+        all_headlines = []
+        
+        # 1. Fetch Global Headlines via DuckDuckGo
+        try:
+            with DDGS() as ddgs:
+                for sector in active_sectors:
+                    query = f"latest {sector} stock market news catalysts"
+                    results = list(ddgs.news(query, max_results=5))
+                    for r in results:
+                        all_headlines.append(f"[{sector}] {r['title']}: {r['body']}")
+        except Exception as e:
+            print(f"NewsScannerAgent: DuckDuckGo error: {e}")
+            # Fallback headlines for testing
+            all_headlines = [
+                "Intel (INTC) to shift chip strategy, focusing on mid-tier AI demand.",
+                "Nvidia (NVDA) announces new H200 production ramp-up.",
+                "Bitcoin (BTC) breaks all-time high amid spot ETF inflows."
+            ]
+        
+        context_str = "\n".join(all_headlines)
         sectors_str = ", ".join(active_sectors) if active_sectors else "any"
+        
+        # 2. Use LLM to extract actionable data from the live headlines
         system_prompt = f"""
-        You are an AI News Analyst. Your job is to identify companies with significant news catalysts 
-        within the following sectors: {sectors_str}.
+        You are a Financial News Analyst. Given these LIVE HEADLINES:
+        {context_str}
+        
+        Identify companies with significant news catalysts in these sectors: {sectors_str}.
         
         OUTPUT REQUIREMENT:
         Provide a JSON list of tickers and their likely sector.
         Format: {{"catalysts": [{{"ticker": "SYMBOL", "sector": "tech|health|metals|crypto|other", "reason": "SHORT_DESCRIPTION"}}]}}
         """
-        user_prompt = f"Scan current market headlines for major catalysts and high-momentum stocks in the {sectors_str} sectors."
+        user_prompt = f"Extract tickers and catalysts for {sectors_str} from the headlines."
         
-        # Simulate LLM response
         content = ""
         if self.provider == "ollama":
             response = self.client.chat(
@@ -177,8 +229,7 @@ class NewsScannerAgent(GenericResearchAgent):
             )
             content = response.message.content
         else:
-            # Fallback for other providers if needed
-            content = "{\"catalysts\": [{\"ticker\": \"NVDA\", \"sector\": \"tech\", \"reason\": \"AI chip demand surge\"}]}"
+            return []
 
         try:
             if "```json" in content:

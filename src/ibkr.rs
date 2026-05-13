@@ -4,11 +4,18 @@ use secrecy::{Secret};
 use tokio::net::TcpStream;
 use tokio::net::tcp::{OwnedReadHalf, OwnedWriteHalf};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::sync::{Mutex, oneshot};
+use tokio::sync::{Mutex, oneshot, broadcast};
 use std::sync::Arc;
 use byteorder::{BigEndian, WriteBytesExt};
 use std::time::{SystemTime, UNIX_EPOCH};
 use dashmap::DashMap;
+
+#[derive(Clone, Debug)]
+pub struct NewsHeadline {
+    pub symbol: String,
+    pub headline: String,
+    pub article_id: String,
+}
 
 pub struct IbkrBroker {
     pub host: String,
@@ -18,8 +25,11 @@ pub struct IbkrBroker {
     writer: Option<Arc<Mutex<OwnedWriteHalf>>>,
     pub reader: Option<OwnedReadHalf>,
     pub next_order_id: Arc<Mutex<i32>>,
+    pub next_ticker_id: Arc<Mutex<i32>>,
+    pub ticker_map: Arc<DashMap<i32, String>>,
     pub market_data: Arc<DashMap<String, f64>>,
     pub account_responders: Arc<DashMap<String, oneshot::Sender<f64>>>,
+    pub news_sender: broadcast::Sender<NewsHeadline>,
 }
 
 impl IbkrBroker {
@@ -27,6 +37,8 @@ impl IbkrBroker {
         let final_client_id = if client_id > 0 { client_id } else { 
             (SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs() % 10000) as i32 
         };
+
+        let (news_tx, _) = broadcast::channel(1000);
 
         IbkrBroker {
             host,
@@ -36,8 +48,11 @@ impl IbkrBroker {
             writer: None,
             reader: None,
             next_order_id: Arc::new(Mutex::new(1)),
+            next_ticker_id: Arc::new(Mutex::new(1000)),
+            ticker_map: Arc::new(DashMap::new()),
             market_data: Arc::new(DashMap::new()),
             account_responders: Arc::new(DashMap::new()),
+            news_sender: news_tx,
         }
     }
 
@@ -49,7 +64,9 @@ impl IbkrBroker {
         mut reader: OwnedReadHalf, 
         id_arc: Arc<Mutex<i32>>, 
         md_arc: Arc<DashMap<String, f64>>,
-        res_arc: Arc<DashMap<String, oneshot::Sender<f64>>>
+        res_arc: Arc<DashMap<String, oneshot::Sender<f64>>>,
+        news_tx: broadcast::Sender<NewsHeadline>,
+        ticker_map: Arc<DashMap<i32, String>>,
     ) -> Result<(), String> {
         loop {
             let mut len_buf = [0u8; 4];
@@ -74,18 +91,37 @@ impl IbkrBroker {
                         }
                     },
                     "4" => { // TickPrice
-                        let ticker_id = parts.get(1).unwrap_or(&"0");
+                        let ticker_id_str = parts.get(1).unwrap_or(&"0");
                         let tick_type = parts.get(2).unwrap_or(&"0");
                         let price = parts.get(3).unwrap_or(&"0.0");
                         
                         if *tick_type == "4" || *tick_type == "2" { // Last or Ask
                             if let Ok(p) = price.parse::<f64>() {
-                                md_arc.insert(ticker_id.to_string(), p); 
+                                if let Ok(tid) = ticker_id_str.parse::<i32>() {
+                                    if let Some(symbol) = ticker_map.get(&tid) {
+                                        md_arc.insert(symbol.clone(), p);
+                                    }
+                                }
                             }
                         }
                     },
+                    "83" => { // TickNews
+                        // Parts: [83, tickerId, timeStamp, providerCode, articleId, headline, extraData]
+                        let ticker_id_str = parts.get(1).unwrap_or(&"");
+                        let article_id = parts.get(4).unwrap_or(&"");
+                        let headline = parts.get(5).unwrap_or(&"");
+                        
+                        if let Ok(tid) = ticker_id_str.parse::<i32>() {
+                            let symbol = ticker_map.get(&tid).map(|s| s.clone()).unwrap_or_else(|| ticker_id_str.to_string());
+                            println!("IBKR: News Headline for {}: {}", symbol, headline);
+                            let _ = news_tx.send(NewsHeadline {
+                                symbol,
+                                headline: headline.to_string(),
+                                article_id: article_id.to_string(),
+                            });
+                        }
+                    },
                     "101" => { // Account Update
-                        // Parts: [101, version, key, value, currency, accountName]
                         let key = parts.get(2).unwrap_or(&"");
                         let val = parts.get(3).unwrap_or(&"0.0");
                         if *key == "NetLiquidation" {
@@ -105,10 +141,10 @@ impl IbkrBroker {
 
     fn dispatch_message(msg_id: &str, parts: &[&str]) {
         match msg_id {
-            "101" => {}, // Handled in loop
+            "101" => {}, 
             "102" => println!("IBKR: Received OrderStatus: {:?}", parts),
             "103" => println!("IBKR: Received OpenOrder: {:?}", parts),
-            "4" => {}, // Handled in loop
+            "4" => {}, 
             _ => println!("IBKR: Received message ID {}: {:?}", msg_id, parts),
         }
     }
@@ -185,7 +221,6 @@ impl Broker for IbkrBroker {
             let (tx, rx) = oneshot::channel();
             self.account_responders.insert("NetLiquidation".to_string(), tx);
             
-            // reqAccountUpdates
             Self::send_message_internal(writer_arc, "6\01\0\0").await?;
             
             match tokio::time::timeout(std::time::Duration::from_secs(5), rx).await {
@@ -204,13 +239,19 @@ impl Broker for IbkrBroker {
 
     async fn get_price(&self, symbol: &str) -> Result<f64, String> {
         if let Some(ref writer_arc) = self.writer {
-            let ticker_id = "1";
-            let request = format!("1\0{}\0{}\0STK\0SMART\0NASDAQ\0USD\0\0false\0false\0", ticker_id, symbol);
+            let mut tid_lock = self.next_ticker_id.lock().await;
+            let ticker_id = *tid_lock;
+            *tid_lock += 1;
+            drop(tid_lock);
+
+            self.ticker_map.insert(ticker_id, symbol.to_string());
+            let tid_str = ticker_id.to_string();
+
+            let request = format!("1\0{}\0{}\0STK\0SMART\0NASDAQ\0USD\0\0false\0false\0", tid_str, symbol);
             Self::send_message_internal(writer_arc, &request).await?;
             
-            // Wait for market data to populate (simple poll for now, should ideally use responders too)
             for _ in 0..10 {
-                if let Some(p) = self.market_data.get(ticker_id) {
+                if let Some(p) = self.market_data.get(symbol) {
                     return Ok(*p);
                 }
                 tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
@@ -246,6 +287,35 @@ impl Broker for IbkrBroker {
             Self::send_message_internal(writer_arc, &order_msg).await?;
             
             Ok(format!("IBKR-REQ-{}", order_id))
+        } else {
+            Err("No active connection".to_string())
+        }
+    }
+
+    async fn subscribe_news(&self, symbol: &str) -> Result<(), String> {
+        if let Some(ref writer_arc) = self.writer {
+            let mut tid_lock = self.next_ticker_id.lock().await;
+            let ticker_id = *tid_lock;
+            *tid_lock += 1;
+            drop(tid_lock);
+
+            self.ticker_map.insert(ticker_id, symbol.to_string());
+            let tid_str = ticker_id.to_string();
+            
+            let request = if symbol.contains(':') {
+                // News Contract (e.g. BRF:BRF_ALL)
+                let parts: Vec<&str> = symbol.split(':').collect();
+                let provider = parts.get(0).unwrap_or(&"BRF");
+                let code = parts.get(1).unwrap_or(&"BRF_ALL");
+                // Message Format for NEWS Contract: [1, tickerId, symbol, NEWS, exchange, USD, ...]
+                format!("1\0{}\0{}\0NEWS\0\0\0\0{}\0\0USD\0\0\00\00\0292\0false\0false\0\0", tid_str, code, provider)
+            } else {
+                // Stock News
+                format!("1\0{}\0{}\0STK\0SMART\0NASDAQ\0USD\0\0false\0false\0292\0", tid_str, symbol)
+            };
+            
+            Self::send_message_internal(writer_arc, &request).await?;
+            Ok(())
         } else {
             Err("No active connection".to_string())
         }

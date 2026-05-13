@@ -66,4 +66,9 @@ impl Broker for MockBroker {
     async fn place_order(&self, symbol: &str, quantity: f64, price: f64) -> Result<String, String> {
         self.place_order_async(symbol, quantity, price).await
     }
+
+    async fn subscribe_news(&self, symbol: &str) -> Result<(), String> {
+        println!("MockBroker: Simulating news subscription for {}", symbol);
+        Ok(())
+    }
 }

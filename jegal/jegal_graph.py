@@ -1,5 +1,5 @@
 import operator
-from typing import Annotated, TypedDict, Union, List, Dict
+from typing import Annotated, TypedDict, Union, List, Dict, Any
 import json
 import os
 import asyncio
@@ -34,26 +34,39 @@ class AgentState(TypedDict):
     target_weights: Dict[str, List[Dict[str, Union[str, float]]]]
     # Full Markdown trade journal
     trade_journal: str
+    # Execution Engine instance (persistent)
+    engine: Any
 
 # --- 2. Define Agent Nodes ---
 
 async def news_scanner_node(state: AgentState):
     print("\n[Node: News Scanner] Searching for catalysts...")
-    scanner = NewsScannerAgent()
+    # Pass the engine to the scanner if it exists
+    scanner = NewsScannerAgent(engine=state.get("engine"))
     active_sectors = [s for s, active in state["sectors"].items() if active]
     
     catalysts = await scanner.scan_for_catalysts(active_sectors)
     discovered = [item["ticker"] for item in catalysts]
     
-    # Update config.json dynamic_watchlist for persistence (optional but good)
+    # Update config.json dynamic_watchlist for persistence
     with open("config.json", "r") as f:
         config = json.load(f)
     
-    new_found = [t for t in discovered if t not in config["dynamic_watchlist"]]
+    new_found = [t for t in discovered if t not in config["dynamic_watchlist"] and t not in config["manual_watchlist"]]
     if new_found:
+        print(f"NewsScannerAgent: Found {len(new_found)} new potential tickers: {new_found}")
         config["dynamic_watchlist"].extend(new_found)
         with open("config.json", "w") as f:
             json.dump(config, f, indent=2)
+            
+        # If we have an engine, subscribe to news for the newly discovered tickers immediately
+        if state.get("engine"):
+            for ticker in new_found:
+                try:
+                    state["engine"].subscribe_news(ticker)
+                    print(f"Jegal: Subscribed to live news for NEW ticker: {ticker}")
+                except Exception as e:
+                    print(f"Jegal: Failed to subscribe to {ticker}: {e}")
     
     return {"discovered_tickers": discovered}
 
@@ -158,18 +171,58 @@ def build_trading_graph():
 async def run_jegal():
     print("Jegal: Initializing LangGraph Autonomous Pipeline...")
     
-    # Load Initial Config
     with open("config.json", "r") as f:
         config = json.load(f)
+
+    # Initialize Engine at the start for News/Watchlist Sync
+    print("Jegal: Syncing watchlist with IBKR...")
+    risk_cfg = config["risk"]
+    risk_manager = jegal.RiskManager(
+        risk_cfg["max_exposure_per_symbol"],
+        risk_cfg["max_total_exposure"],
+        risk_cfg["drawdown_limit"],
+        risk_cfg["max_orders_per_window"],
+        risk_cfg["velocity_window_seconds"]
+    )
+    engine = jegal.ExecutionEngine(risk_manager)
+    broker_cfg = config["broker"]
+    
+    try:
+        engine.set_broker(broker_cfg["type"], {
+            "host": broker_cfg["host"],
+            "port": broker_cfg["port"],
+            "client_id": broker_cfg["client_id"]
+        })
+        
+        # Subscribe to all watchlist stocks
+        watchlist = config["manual_watchlist"] + config["dynamic_watchlist"]
+        for ticker in watchlist:
+            try:
+                engine.subscribe_news(ticker)
+                print(f"Jegal: Subscribed to news for {ticker}")
+            except Exception as e:
+                print(f"Jegal: Failed to subscribe to {ticker}: {e}")
+        
+        # Subscribe to broad market news
+        try:
+            engine.subscribe_news("BRF:BRF_ALL")
+            print("Jegal: Subscribed to Global BroadTape News.")
+        except:
+            pass
+            
+    except Exception as e:
+        print(f"Jegal: Broker connection failed, using Mock: {e}")
+        engine.set_broker("mock", {"balance": config["budget"]["total_budget"]})
     
     # Initial State
     initial_state: AgentState = {
         "sectors": config["sectors"],
         "discovered_tickers": [],
         "manual_watchlist": config["manual_watchlist"],
-        "portfolio_context": {}, # This could be fetched via a pre-node
+        "portfolio_context": {}, 
         "target_weights": {"weights": []},
-        "trade_journal": ""
+        "trade_journal": "",
+        "engine": engine
     }
     
     app = build_trading_graph()

@@ -9,4 +9,5 @@ pub trait Broker: Send + Sync {
     async fn get_positions(&self) -> Result<std::collections::HashMap<String, f64>, String>;
     async fn get_price(&self, symbol: &str) -> Result<f64, String>;
     async fn place_order(&self, symbol: &str, quantity: f64, price: f64) -> Result<String, String>;
+    async fn subscribe_news(&self, symbol: &str) -> Result<(), String>;
 }

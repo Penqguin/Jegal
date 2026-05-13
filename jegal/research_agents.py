@@ -178,49 +178,71 @@ class FinancialResearchAgent(GenericResearchAgent):
 
 class NewsScannerAgent(GenericResearchAgent):
     """
-    Agent focused on scanning news for new catalysts using free sources (DuckDuckGo & YFinance).
+    Agent focused on scanning news for catalysts using both free sources (DDG)
+    and broker-delivered feeds (IBKR).
     """
+    def __init__(self, provider: str = None, model: str = None, engine=None):
+        super().__init__(provider, model)
+        self.engine = engine
+
     async def scan_for_catalysts(self, active_sectors: list = None) -> list:
         """
-        Fetches live news from free sources and uses the LLM to identify tickers and catalysts.
+        Fetches live news and uses the LLM to identify tickers and catalysts.
         """
-        print(f"NewsScannerAgent: Fetching live news for {active_sectors} via DuckDuckGo...")
-        
         all_headlines = []
-        
-        # 1. Fetch Global Headlines via DuckDuckGo
-        try:
-            with DDGS() as ddgs:
-                for sector in active_sectors:
-                    query = f"latest {sector} stock market news catalysts"
-                    results = list(ddgs.news(query, max_results=5))
-                    for r in results:
-                        all_headlines.append(f"[{sector}] {r['title']}: {r['body']}")
-        except Exception as e:
-            print(f"NewsScannerAgent: DuckDuckGo error: {e}")
-            # Fallback headlines for testing
-            all_headlines = [
-                "Intel (INTC) to shift chip strategy, focusing on mid-tier AI demand.",
-                "Nvidia (NVDA) announces new H200 production ramp-up.",
-                "Bitcoin (BTC) breaks all-time high amid spot ETF inflows."
-            ]
-        
+
+        # 1. Fetch from IBKR Engine (Primary Source - Low Latency)
+        if self.engine:
+            print("NewsScannerAgent: Checking IBKR for live headlines...")
+            # Check broad discovery feed
+            broad_news = self.engine.get_latest_news("BRF:BRF_ALL")
+            for h in broad_news:
+                all_headlines.append(f"[Discovery - IBKR] {h}")
+
+            # Check specific watchlist symbols for updates
+            watchlist = self.config.get("manual_watchlist", []) + self.config.get("dynamic_watchlist", [])
+            for symbol in watchlist:
+                news = self.engine.get_latest_news(symbol)
+                for h in news:
+                    all_headlines.append(f"[{symbol} - IBKR] {h}")
+
+        # 2. Fetch from DuckDuckGo (Fallback discovery only if IBKR is empty)
+        if not all_headlines:
+            print(f"NewsScannerAgent: IBKR empty. Falling back to DuckDuckGo for {active_sectors}...")
+            try:
+                with DDGS() as ddgs:
+                    for sector in active_sectors:
+                        query = f"latest {sector} stock market news catalysts"
+                        results = list(ddgs.news(query, max_results=5))
+                        for r in results:
+                            all_headlines.append(f"[{sector}] {r['title']}: {r['body']}")
+            except Exception as e:
+                print(f"NewsScannerAgent: DuckDuckGo error: {e}")
+                # Minimal fallback if all else fails
+                if not all_headlines:
+                    all_headlines = [
+                        "Intel (INTC) to shift chip strategy, focusing on mid-tier AI demand.",
+                        "Nvidia (NVDA) announces new H200 production ramp-up."
+                    ]
+
+        if not all_headlines:
+            return []
+
         context_str = "\n".join(all_headlines)
         sectors_str = ", ".join(active_sectors) if active_sectors else "any"
-        
-        # 2. Use LLM to extract actionable data from the live headlines
+
+        # 3. Use LLM to extract actionable data from the live headlines
         system_prompt = f"""
         You are a Financial News Analyst. Given these LIVE HEADLINES:
         {context_str}
-        
+
         Identify companies with significant news catalysts in these sectors: {sectors_str}.
-        
+
         OUTPUT REQUIREMENT:
         Provide a JSON list of tickers and their likely sector.
         Format: {{"catalysts": [{{"ticker": "SYMBOL", "sector": "tech|health|metals|crypto|other", "reason": "SHORT_DESCRIPTION"}}]}}
         """
         user_prompt = f"Extract tickers and catalysts for {sectors_str} from the headlines."
-        
         content = ""
         if self.provider == "ollama":
             response = self.client.chat(
@@ -228,7 +250,11 @@ class NewsScannerAgent(GenericResearchAgent):
                 messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}]
             )
             content = response.message.content
-        else:
+        elif self.provider in ["openai", "anthropic", "gemini"]:
+            # Reuse execute_task logic but for JSON
+            res = await self.execute_task(system_prompt, user_prompt, symbols=["MARKET"])
+            content = res.get("research_summary", "")
+        else: # Default/Error
             return []
 
         try:

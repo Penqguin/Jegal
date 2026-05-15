@@ -1,6 +1,6 @@
 # Jegal
 
-A high-performance personal open-source auto trader built with a Python/Rust hybrid architecture. Jegal combines autonomous LLM-driven research with a low-latency Rust execution engine.
+A educational project to learn about investing, rust and ml
 
 ## Features
 
